@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 args = sys.argv
 print args
 
-def led_and_sound__sec():
+def led_and_sound_sec():
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(25, GPIO.OUT)
     GPIO.output(25, True)
@@ -70,13 +70,15 @@ def is_weather_clear(zipcode, date_time):
     time_req = '&requestedTime='+date_time
     
     r = requests.get(sky_request+lat_lon_req+time_req)
-    cover = int((ET.fromstring(r.text)[1][0][2].text).split('.')[0])
+    try:
+        cover = int((ET.fromstring(r.text)[1][0][2].text).split('.')[0])
+    except:
+        print 'Error retrieving weather data for date_time.'
+        cover = 100
 
     if cover < 25:
-        #print 'it is clear!'
         return True
     else:
-        #print 'too cloudy to see'
         return False
 
 def send_text_msg(msg):
@@ -93,8 +95,12 @@ def send_text_msg(msg):
     print 'Text message sent to '+bens_text_gateway
     return
 
+
+
 date_time = '2015-11-20T12:30:00'
 clear = is_weather_clear(24060, date_time)
 night = is_night(24060, date_time)
 print 'is clear? '+str(clear)
 print 'is night? '+str(night)
+led_and_sound_sec()
+
