@@ -3,9 +3,54 @@ import xml.etree.ElementTree as ET
 import smtplib, getpass, json
 import RPi.GPIO as GPIO
 from datetime import datetime, timedelta
+from geopy import Nominatim
+import getopt, geocoder, ephem, math
 
-args = sys.argv
-print args
+def usage():
+    print ("icu.py -z zipcode -s satellite_name")
+
+def get_times(tle, elevation, location):
+    sat = ephem.readtle(str(tle[0]), str(tle[1]), str(tle[2]))
+
+    horizon = '-0:34'
+    viewer = ephem.Observer()
+    viewer.lon, viewer.lat = location.longitude, location.latitude
+    now = datetime.utcnow()
+    viewer.date = now
+    viewer.horizon=horizon
+    i = 0
+    times = []
+    while i < 100:
+        sat.compute(viewer)
+        np = viewer.next_pass(sat)
+        next_pass_times = np[::2]
+        if None in next_pass_times:
+            break
+        sun = ephem.Sun()
+        sun.compute(viewer)
+        sun_alt = math.degrees(sun.alt)
+        if sat.eclipsed is False:
+            times.append(next_pass_times[0].datetime().strftime("%Y-%m-%dT%H:%M:%S"))
+            i = i + 1
+        viewer.date = next_pass_times[-1]
+    return times
+
+def get_tle(satellite):
+    space_base_URL = "https://www.space-track.org"
+    auth_path = "/ajaxauth/login"
+    logout_path = "/ajaxauth/logout"
+    user = "andrewgs@vt.edu"
+    passw = "Holotrackvexsentinal_691"
+    query = "/basicspacedata/query/class/tle_latest/ORDINAL/1/NORAD_CAT_ID/"
+    query = query + str(satellite)
+    query = query + "/orderby/TLE_LINE0 asc/format/3le"
+    cred = {"identity": user, "password": passw}
+    s = requests.Session()
+    r1 = s.post(space_base_URL + auth_path, data=cred)
+    r2 = s.get(space_base_URL + query)
+    result = r2.text
+    s.get(space_base_URL + logout_path)
+    return result
 
 def led_and_sound_sec():
     GPIO.setmode(GPIO.BCM)
@@ -30,6 +75,7 @@ def is_night(zipcode, date_time):
     #array of time to compare to result
     time_val = time.mktime(time.strptime('1999-'+date_time[1], '%Y-%H:%M:%S'))
     time_val = datetime.fromtimestamp(time_val)
+    time_val = time_val.hour*60*60 + time_val.minute*60 + time_val.second
     date = date_time[0]
 
     #date format --> YYYY-MM-DD
@@ -40,11 +86,14 @@ def is_night(zipcode, date_time):
     #formatting result
     sunrise = result['results']['sunrise']
     sunset = result['results']['sunset']
+    
     sunrise = time.mktime(time.strptime('1999-'+sunrise, '%Y-%I:%M:%S %p'))
     sunset = time.mktime(time.strptime('1999-'+sunset, '%Y-%I:%M:%S %p'))
-    sunrise = datetime.fromtimestamp(sunrise) + timedelta(hours=1)
-    sunset = datetime.fromtimestamp(sunset) - timedelta(hours=1)
-
+    sunrise = datetime.fromtimestamp(sunrise) - timedelta(hours=5)+timedelta(hours=1)
+    sunset = datetime.fromtimestamp(sunset) - timedelta(hours=5)-timedelta(hours=1)
+    sunrise = sunrise.hour*60*60 + sunrise.minute*60 + sunrise.second
+    sunset = sunset.hour*60*60 + sunset.minute*60 + sunset.second
+    
     if(time_val>sunrise and time_val<sunset):
         return False
     else:
@@ -59,7 +108,7 @@ def is_weather_clear(zipcode, date_time):
     lat_lon = (ET.fromstring(r.text)[0].text).split(',')
     latitude = lat_lon[0]
     longitude = lat_lon[1]
-    print 'Zipcode located at LAT:',latitude,'LON:',longitude
+    #print 'Zipcode located at LAT:',latitude,'LON:',longitude
     
     lat_lon_req = '&gmlListLatLon='+latitude+','+longitude
     
@@ -74,6 +123,7 @@ def is_weather_clear(zipcode, date_time):
         cover = int((ET.fromstring(r.text)[1][0][2].text).split('.')[0])
     except:
         print 'Error retrieving weather data for date_time.'
+        print r.text
         cover = 100
 
     if cover < 25:
@@ -96,11 +146,41 @@ def send_text_msg(msg):
     return
 
 
+#main
+try:
+    arg1, arg2 = getopt.getopt(sys.argv[1:], "-z:, -s:")
+except getopt.GetoptError as err:
+    print (str(err))
+    usage()
+    sys.exit(2)
+if len(arg1) != 2:
+    usage()
+    sys.exit(2)
+zip_code = ''
+satellite = ''
+for i in arg1:
+    if (i[0] == '-z'):
+        zip_code = i[1]
+    else:
+        satellite = i[1]
+result = get_tle(satellite)
+result = result.split('\n')
+geolocator = Nominatim()
+location = geolocator.geocode(zip_code + ", United States")
+g = geocoder.elevation((location.latitude, location.longitude))
+times = get_times(result, g.meters, location)
+#print times
 
-date_time = '2015-11-20T12:30:00'
-clear = is_weather_clear(24060, date_time)
-night = is_night(24060, date_time)
-print 'is clear? '+str(clear)
-print 'is night? '+str(night)
-led_and_sound_sec()
+clear_times = []
 
+for t in times:
+    clear = is_weather_clear(zip_code, t)
+    night = is_night(zip_code, t)
+    
+    if(clear and night):
+        print 'Checking time: '+t
+        clear_times.append(t)
+        if(len(clear_times)==5):
+            break
+
+print clear_times
